@@ -13,3 +13,5 @@ This code was written using AI.
 Click to try a live demo!
 
 [![Anytone AT-D168UV](anytone_atd168uv_1.jpg)](https://lquesada.github.io/radioUIdesigns/anytone_atd168uv_1.html)
+
+(This is not firmware, this doesn't run in an actual device, it's overlayed on the transceiver picture!)
