@@ -12,4 +12,4 @@ This code was written using AI.
 
 Click to try a live demo!
 
-[![Anytone AT-D168UV](anytone_atd168uv_1.jpg)]([anytone_atd168uv_1.html](https://lquesada.github.io/radioUIdesigns/anytone_atd168uv_1.html)
+![Anytone AT-D168UV](anytone_atd168uv_1.jpg)]([anytone_atd168uv_1.html](https://lquesada.github.io/radioUIdesigns/anytone_atd168uv_1.html)
