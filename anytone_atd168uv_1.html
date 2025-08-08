@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Handheld UI Simulator + Transceiver Demo</title>
+  <style>
+    :root { --bg:#111; --panel:#1b1b1b; --text:#ddd; --grid:#333; }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    header{padding:8px 12px;background:var(--panel);border-bottom:1px solid #222;position:sticky;top:0;z-index:20;display:flex;gap:10px;align-items:center}
+    header .spacer{flex:1}
+    .btn{cursor:pointer;background:#222;color:#ddd;border:1px solid #333;border-radius:8px;padding:6px 10px;user-select:none}
+    .btn:hover{border-color:#444}
+    .btn.pressed{background:#2f2f2f;border-color:#555;box-shadow:inset 0 2px 6px rgba(0,0,0,.6)}
+    .toolbar{display:flex;gap:12px;align-items:center}
+    label{display:flex;gap:6px;align-items:center}
+
+    .device{position:relative;display:grid;grid-template-columns:auto auto;gap:8px;padding:10px;border-radius:14px;border:1px solid #222;background:#0b0b0b;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+    .left-keys{display:flex;flex-direction:column;gap:6px;justify-content:flex-start}
+    .ptt{width:56px;height:120px}
+    .sidebtn{width:56px;height:36px}
+    .stage{position:relative;display:inline-block}
+    .stage canvas{position:absolute;left:0;top:0;image-rendering:pixelated}
+    .stage canvas.screen{z-index:1}
+    .stage canvas.grid{z-index:2;pointer-events:none}
+
+    .kbd{display:grid;grid-template-columns:repeat(4,42px);gap:6px;grid-column:1/3;margin-top:6px}
+    .kbd .k{padding:6px 0;border:1px solid #333;background:#222;border-radius:6px;text-align:center;cursor:pointer;user-select:none}
+    .kbd .k.pressed{background:#2f2f2f;border-color:#555;box-shadow:inset 0 2px 6px rgba(0,0,0,.6)}
+    .kbd .k:active{transform:translateY(1px)}
+    .row-gap{height:8px}
+    footer{padding:10px 12px 30px;color:#aaa}
+
+  a {
+    color: white;
+  }
+
+  a:visited {
+    color: white;
+  }
+
+  a:hover,
+  a:focus {
+    color: #ddd; /* slightly lighter/darker if you want hover feedback */
+  }
+
+  a:active {
+    color: #ccc;
+  }
+
+  </style>
+</head>
+<body>
+  <header>
+    <strong>Handheld UI Simulator</strong>
+    <div class="toolbar">
+      <label><input type="checkbox" id="chk-grid"> Show grid</label>
+    </div>
+    <div class="spacer"></div>
+    <small>Keys: Arrows, Enter, Escape, Space, Tab. (Peaks run in live mode @ 50fps.)</small>
+  </header>
+
+  <div class="device" id="device">
+    <div class="left-keys">
+      <button class="btn ptt" data-key="Tab">PTT (Tab)</button>
+      <button class="btn sidebtn" data-key="KeyQ">P1 (Q)</button>
+      <button class="btn sidebtn" data-key="KeyW">P2 (W)</button>
+    </div>
+    <div class="stage" id="stage">
+      <canvas class="screen" id="screen"></canvas>
+      <canvas class="grid" id="grid"></canvas>
+    </div>
+
+    <!-- Control rows under the screen -->
+    <div class="kbd" id="kbd-top">
+      <div class="k" data-key="Enter">Enter</div>
+      <div class="k" data-key="ArrowUp">↑</div>
+      <div class="k" data-key="ArrowDown">↓</div>
+      <div class="k" data-key="Escape">Esc</div>
+    </div>
+    <div class="row-gap"></div>
+    <div class="kbd" id="kbd1">
+      <div class="k" data-key="Digit1">1</div>
+      <div class="k" data-key="Digit2">2</div>
+      <div class="k" data-key="Digit3">3</div>
+      <div class="k" data-key="NumpadMultiply">*</div>
+    </div>
+    <div class="kbd" id="kbd2">
+      <div class="k" data-key="Digit4">4</div>
+      <div class="k" data-key="Digit5">5</div>
+      <div class="k" data-key="Digit6">6</div>
+      <div class="k" data-key="Digit0">0</div>
+    </div>
+    <div class="kbd" id="kbd3">
+      <div class="k" data-key="Digit7">7</div>
+      <div class="k" data-key="Digit8">8</div>
+      <div class="k" data-key="Digit9">9</div>
+      <div class="k" data-key="NumpadDivide">#</div>
+    </div>
+  </div>
+
+  <footer>This is a test/experiment on alternate UI for the Anytone D168-UV radio. <a href="https://luisquesada.com">Luis Quesada (HB9IPH)</a>. See <a href="https://github.com/lquesada/radioUIdesigns">https://github.com/lquesada/radioUIdesigns</a>.</footer>
+
+<script>
+/********************
+ * LIBRARY CONFIG   *
+ ********************/
+const RES_W = 128;          // logical width
+const RES_H = 160;          // logical height
+let SCALE = 8;               // default smaller scale
+const TICK_MS = 1000;       // time tick (UI now also repaints at live fps)
+const GRID_COLOR = '#333';
+const GRID_BORDER_WIDTH = 1;
+const BG_COLOR = '#000';
+const MAX_LIVE_FPS = 50;    // fast live redraw
+let REPEAT_INITIAL_MS = 300; // first repeat delay (ms)
+let REPEAT_RATE_MS = 100;    // subsequent repeats (ms)
+
+/**********************
+ * CANVAS SETUP       *
+ **********************/
+const stage = document.getElementById('stage');
+const screenCanvas = document.getElementById('screen');
+const gridCanvas = document.getElementById('grid');
+const chkGrid = document.getElementById('chk-grid');
+
+const bufferCanvas = document.createElement('canvas');
+bufferCanvas.width = RES_W; bufferCanvas.height = RES_H;
+const bctx = bufferCanvas.getContext('2d', { willReadFrequently: true });
+
+let DISPLAY_W = RES_W * SCALE; let DISPLAY_H = RES_H * SCALE;
+for (const c of [screenCanvas, gridCanvas]) { c.width = DISPLAY_W; c.height = DISPLAY_H; c.style.width = DISPLAY_W + 'px'; c.style.height = DISPLAY_H + 'px'; }
+stage.style.width = DISPLAY_W + 'px'; stage.style.height = DISPLAY_H + 'px';
+
+const sctx = screenCanvas.getContext('2d'); sctx.imageSmoothingEnabled = false;
+const gctx = gridCanvas.getContext('2d');
+
+function drawGrid(){ gctx.clearRect(0,0,DISPLAY_W,DISPLAY_H); gctx.save(); gctx.strokeStyle=GRID_COLOR; gctx.lineWidth=GRID_BORDER_WIDTH; gctx.beginPath(); for(let x=0;x<=DISPLAY_W;x+=SCALE){ gctx.moveTo(x+0.5,0); gctx.lineTo(x+0.5,DISPLAY_H);} for(let y=0;y<=DISPLAY_H;y+=SCALE){ gctx.moveTo(0,y+0.5); gctx.lineTo(DISPLAY_W,y+0.5);} gctx.stroke(); gctx.restore(); }
+// start with grid hidden
+gridCanvas.style.display = 'none';
+chkGrid.addEventListener('change',()=>{ gridCanvas.style.display = chkGrid.checked ? 'block' : 'none'; });
+
+function blit(){ sctx.save(); sctx.imageSmoothingEnabled=false; sctx.clearRect(0,0,DISPLAY_W,DISPLAY_H); sctx.drawImage(bufferCanvas,0,0,RES_W,RES_H,0,0,DISPLAY_W,DISPLAY_H); sctx.restore(); }
+
+/*****************
+ * DRAW PRIMITIVES
+ *****************/
+function inBounds(x,y){ return x>=0 && x<RES_W && y>=0 && y<RES_H; }
+function clearScreen(color=BG_COLOR){ bctx.fillStyle=color; bctx.fillRect(0,0,RES_W,RES_H); }
+function drawPixel(x,y,color='#fff'){ if(!inBounds(x,y)) return; bctx.fillStyle=color; bctx.fillRect(x,y,1,1); }
+function drawLine(x0,y0,x1,y1,color='#fff'){ const dx=Math.abs(x1-x0),sx=x0<x1?1:-1; const dy=-Math.abs(y1-y0),sy=y0<y1?1:-1; let err=dx+dy,e2; while(true){ if(inBounds(x0,y0)) bctx.fillStyle=color, bctx.fillRect(x0,y0,1,1); if(x0===x1&&y0===y1) break; e2=2*err; if(e2>=dy){ err+=dy; x0+=sx;} if(e2<=dx){ err+=dx; y0+=sy;} } }
+function drawRect(x,y,w,h,color='#fff'){ drawLine(x,y,x+w-1,y,color); drawLine(x,y,x,y+h-1,color); drawLine(x+w-1,y,x+w-1,y+h-1,color); drawLine(x,y+h-1,x+w-1,y+h-1,color); }
+function fillRect(x,y,w,h,color='#fff'){ let rx=x,ry=y,rw=w,rh=h; if(rx<0){rw+=rx;rx=0;} if(ry<0){rh+=ry;ry=0;} if(rx+rw>RES_W){rw=RES_W-rx;} if(ry+rh>RES_H){rh=RES_H-ry;} if(rw<=0||rh<=0) return; bctx.fillStyle=color; bctx.fillRect(rx,ry,rw,rh); }
+
+/********************
+ * SMALL FONT 5x7 (A-Z, 0-9, basic symbols)
+ ********************/
+const FONT=(function(){ const map={}; const def=(ch,rows)=>map[ch]=rows;
+  // digits 0-9
+  def('0',[0b01110,0b10001,0b10011,0b10101,0b11001,0b10001,0b01110]);
+  def('1',[0b00100,0b01100,0b00100,0b00100,0b00100,0b00100,0b01110]);
+  def('2',[0b01110,0b10001,0b00001,0b00110,0b01000,0b10000,0b11111]);
+  def('3',[0b11110,0b00001,0b00001,0b01110,0b00001,0b00001,0b11110]);
+  def('4',[0b00010,0b00110,0b01010,0b10010,0b11111,0b00010,0b00010]);
+  def('5',[0b11111,0b10000,0b11110,0b00001,0b00001,0b10001,0b01110]);
+  def('6',[0b00110,0b01000,0b10000,0b11110,0b10001,0b10001,0b01110]);
+  def('7',[0b11111,0b00001,0b00010,0b00100,0b01000,0b01000,0b01000]);
+  def('8',[0b01110,0b10001,0b10001,0b01110,0b10001,0b10001,0b01110]);
+  def('9',[0b01110,0b10001,0b10001,0b01111,0b00001,0b00010,0b01100]);
+  // letters A-Z (5x7)
+  def('A',[0b01110,0b10001,0b10001,0b11111,0b10001,0b10001,0b10001]);
+  def('B',[0b11110,0b10001,0b10001,0b11110,0b10001,0b10001,0b11110]);
+  def('C',[0b01110,0b10001,0b10000,0b10000,0b10000,0b10001,0b01110]);
+  def('D',[0b11100,0b10010,0b10001,0b10001,0b10001,0b10010,0b11100]);
+  def('E',[0b11111,0b10000,0b10000,0b11110,0b10000,0b10000,0b11111]);
+  def('F',[0b11111,0b10000,0b10000,0b11110,0b10000,0b10000,0b10000]);
+  def('G',[0b01110,0b10001,0b10000,0b10111,0b10001,0b10001,0b01111]);
+  def('H',[0b10001,0b10001,0b10001,0b11111,0b10001,0b10001,0b10001]);
+  def('I',[0b01110,0b00100,0b00100,0b00100,0b00100,0b00100,0b01110]);
+  def('J',[0b00111,0b00010,0b00010,0b00010,0b10010,0b10010,0b01100]);
+  def('K',[0b10001,0b10010,0b10100,0b11000,0b10100,0b10010,0b10001]);
+  def('L',[0b10000,0b10000,0b10000,0b10000,0b10000,0b10000,0b11111]);
+  def('M',[0b10001,0b11011,0b10101,0b10101,0b10001,0b10001,0b10001]);
+  def('N',[0b10001,0b11001,0b10101,0b10011,0b10001,0b10001,0b10001]);
+  def('O',[0b01110,0b10001,0b10001,0b10001,0b10001,0b10001,0b01110]);
+  def('P',[0b11110,0b10001,0b10001,0b11110,0b10000,0b10000,0b10000]);
+  def('Q',[0b01110,0b10001,0b10001,0b10001,0b10101,0b10010,0b01101]);
+  def('R',[0b11110,0b10001,0b10001,0b11110,0b10100,0b10010,0b10001]);
+  def('S',[0b01111,0b10000,0b10000,0b01110,0b00001,0b00001,0b11110]);
+  def('T',[0b11111,0b00100,0b00100,0b00100,0b00100,0b00100,0b00100]);
+  def('U',[0b10001,0b10001,0b10001,0b10001,0b10001,0b10001,0b01110]);
+  def('V',[0b10001,0b10001,0b10001,0b10001,0b01010,0b01010,0b00100]);
+  def('W',[0b10001,0b10001,0b10101,0b10101,0b10101,0b11011,0b10001]);
+  def('X',[0b10001,0b01010,0b00100,0b00100,0b00100,0b01010,0b10001]);
+  def('Y',[0b10001,0b01010,0b00100,0b00100,0b00100,0b00100,0b00100]);
+  def('Z',[0b11111,0b00001,0b00010,0b00100,0b01000,0b10000,0b11111]);
+  // extras
+  def('-', [0,0,0,0b11111,0,0,0]);
+  def('/', [0b00001,0b00010,0b00100,0b01000,0b10000,0,0]);
+  def(':', [0,0b00100,0,0,0,0b00100,0]);
+  def(' ',[0,0,0,0,0,0,0]);
+  def('.',[0,0,0,0,0,0,0b00100]);
+  def('_',[0,0,0,0,0,0,0b11111]);
+  return { charWidth:5, charHeight:7, spacing:1, get:(ch)=>map[ch]||map[' '] };
+})();
+function measureTextBitmap(text){ const w=text.length*(FONT.charWidth+FONT.spacing)-FONT.spacing; return { w, h: FONT.charHeight }; }
+function drawCharBitmap(ch,x,y,color){ const rows=FONT.get(ch); if(!rows) return; bctx.fillStyle=color; for(let r=0;r<FONT.charHeight;r++){ const bits=rows[r]||0; for(let c=0;c<FONT.charWidth;c++){ if(bits & (1<<(FONT.charWidth-1-c))){ const px=x+c,py=y+r; if(inBounds(px,py)) bctx.fillRect(px,py,1,1); } } } }
+function drawTextBitmap(text,x,y,color='#fff',opts={}){ const {scrollX=0,clipW,clipH}=opts; const cw=clipW ?? (text.length*(FONT.charWidth+FONT.spacing)-FONT.spacing); const ch=clipH ?? FONT.charHeight; bctx.save(); bctx.beginPath(); bctx.rect(x,y,cw,ch); bctx.clip(); let dx=x-(scrollX|0); for(let i=0;i<text.length;i++){ drawCharBitmap(text[i],dx,y,color); dx += FONT.charWidth + FONT.spacing; } bctx.restore(); }
+
+/********************
+ * XXL FONT (embedded, bold & taller)
+ ********************/
+const XXL=(function(){ const xxlMap={};
+  function upscale(rows){ const out=new Array(22).fill(0); const sy=22/16, sx=16/11; for(let r=0;r<16;r++){ const bits=rows[r]||0; for(let c=0;c<11;c++){ if(bits & (1<<(10-c))){ const yy=Math.floor(r*sy), xx=Math.floor(c*sx); const hh=Math.ceil(sy), ww=Math.ceil(sx); for(let ry=0; ry<hh && yy+ry<22; ry++){ for(let rx=0; rx<ww && xx+rx<16; rx++){ out[yy+ry] |= (1 << (15-(xx+rx))); } } } } } return out; }
+  const XL={
+  '0':[
+    0b00011111100,
+    0b00110000010,
+    0b01000000001,
+    0b01000000001,
+    0b01000000001,
+    0b01000000001,
+    0b01000000001,
+    0b01000000001,
+    0b01000000001,
+    0b01000000001,
+    0b01000000001,
+    0b00110000010,
+    0b00011111100,
+    0b00000000000,
+    0b00000000000,
+    0b00000000000
+  ],
+  '1':[
+    0b00000110000,
+    0b00001110000,
+    0b00010110000,
+    0b00100110000,
+    0b01000110000,
+    0b00000110000,
+    0b00000110000,
+    0b00000110000,
+    0b00000110000,
+    0b00000110000,
+    0b00000110000,
+    0b01111111110,
+    0b00000000000,
+    0b00000000000,
+    0b00000000000,
+    0b00000000000
+  ],
+  '2':[
+    0b00011111100,
+    0b00110000010,
+    0b01000000001,
+    0b00000000001,
+    0b00000000010,
+    0b00000000100,
+    0b00000001000,
+    0b00000010000,
+    0b00000100000,
+    0b00001000000,
+    0b00010000000,
+    0b00100000000,
+    0b01000000000,
+    0b11111111111,
+    0b00000000000,
+    0b00000000000
+  ],
+  '3':[
+    0b00011111100,
+    0b00110000010,
+    0b00000000001,
+    0b00000000001,
+    0b00000000010,
+    0b00001111100,
+    0b00000000010,
+    0b00000000001,
+    0b00000000001,
+    0b00000000001,
+    0b00000000001,
+    0b00110000010,
+    0b00011111100,
+    0b00000000000,
+    0b00000000000,
+    0b00000000000
+  ],
+  '4':[
+    0b00000010000,
+    0b00000110000,
+    0b00001010000,
+    0b00010010000,
+    0b00100010000,
+    0b01000010000,
+    0b11111111111,
+    0b00000010000,
+    0b00000010000,
+    0b00000010000,
+    0b00000010000,
+    0b00000010000,
+    0b00000000000,
+    0b00000000000,
+    0b00000000000,
+    0b00000000000
+  ],
+  '5':[
+    0b11111111111,
+    0b10000000000,
+    0b10000000000,
+    0b11111111000,
+    0b00000000100,
+    0b00000000010,
+    0b00000000010,
+    0b00000000010,
+    0b00000000010,
+    0b10000000010,
+    0b01000000100,
+    0b00100001000,
+    0b00011110000,
+    0b00000000000,
+    0b00000000000,
+    0b00000000000
+  ],
+  '6':[
+    0b00011111100,
+    0b00110000010,
+    0b01000000000,
+    0b10000000000,
+    0b11111111000,
+    0b10000000100,
+    0b10000000010,
+    0b10000000010,
+    0b10000000010,
+    0b10000000010,
+    0b01000000100,
+    0b00110001000,
+    0b00011110000,
+    0b00000000000,
+    0b00000000000,
+    0b00000000000
+  ],
+  '7':[
+    0b11111111111,
+    0b00000000001,
+    0b00000000010,
+    0b00000000100,
+    0b00000001000,
+    0b00000010000,
+    0b00000100000,
+    0b00001000000,
+    0b00010000000,
+    0b00100000000,
+    0b00100000000,
+    0b00100000000,
+    0b00100000000,
+    0b00000000000,
+    0b00000000000,
+    0b00000000000
+  ],
+  '8':[
+    0b00011111100,
+    0b00110000010,
+    0b01000000001,
+    0b01000000001,
+    0b00110000010,
+    0b00011111100,
+    0b00110000010,
+    0b01000000001,
+    0b01000000001,
+    0b01000000001,
+    0b01000000001,
+    0b00110000010,
+    0b00011111100,
+  ],
+  '9':[
+    0b00011111100,
+    0b00110000010,
+    0b01000000001,
+    0b01000000001,
+    0b01000000001,
+    0b00110000011,
+    0b00011111111,
+    0b00000000001,
+    0b00000000001,
+    0b00000000001,
+    0b01000000010,
+    0b00100000100,
+    0b00011111000,
+  ],
+    '_':[0,0,0,0,0,0,0,0,0,0,0,0,0b11111111111,0,0,0]
+  };
+  for(const k in XL){ xxlMap[k]=upscale(XL[k]); }
+  return { charWidth:16, charHeight:22, spacing:2, get:(ch)=>xxlMap[ch]||xxlMap['_'] };
+})();
+function drawXXL(text,x,y,color='#fff'){
+  let dx=x;
+  for(const ch of text){
+    if(ch=== '.'){
+      // move dot slightly left and lower (2px down)
+      bctx.fillStyle=color; const px=dx-1, py=y+XXL.charHeight-3; bctx.fillRect(px,py,3,3); dx += 5; continue;
+    }
+    const rows=XXL.get(ch); bctx.fillStyle=color;
+    for(let r=0;r<XXL.charHeight;r++){
+      const bits=rows[r]||0;
+      for(let c=0;c<XXL.charWidth;c++){
+        if(bits & (1<<(XXL.charWidth-1-c))){ const px=dx+c, py=y+r; if(inBounds(px,py)) bctx.fillRect(px,py,1,2); }
+      }
+    }
+    dx += XXL.charWidth + XXL.spacing;
+  }
+}
+function measureXXL(text){ let w=0; for(const ch of text){ w += (ch==='.')?5:(XXL.charWidth+XXL.spacing); } if(w>0) w -= XXL.spacing; return { w, h: XXL.charHeight+1 }; }
+
+/*****************
+ * EVENTS & LOOPS
+ *****************/
+let _onKey=function(e){}; let _onKeyThreshold=function(e){}; let _onTick=function(dt){}; let _onRedraw=function(){}; let _onLiveRedraw=function(dt,el){}; let _onKeyDown=function(e){}; let _onKeyUp=function(e){}; let _onKeyPressRepeat=function(e){};
+const keyDownTimes=new Map(), keyThresholdTimers=new Map(), keyRepeatTimers=new Map();
+function clearKeyTimers(code){ const th=keyThresholdTimers.get(code); if(th){ th.forEach(clearTimeout); keyThresholdTimers.delete(code);} const rp=keyRepeatTimers.get(code); if(rp){ clearTimeout(rp.initial); clearInterval(rp.interval); keyRepeatTimers.delete(code);} }
+function handleKeyDown(ev){ const code=ev.code; if(!keyDownTimes.has(code)){
+  keyDownTimes.set(code,performance.now()); _onKeyDown({code,key:ev.key});
+  if(code==='ArrowUp'||code==='ArrowDown'){ _onKeyPressRepeat({code,key:ev.key}); }
+  const timers=[]; timers.push(setTimeout(()=>_onKeyThreshold({code,key:ev.key,stage:'long',elapsedMs:1000}),1000)); timers.push(setTimeout(()=>_onKeyThreshold({code,key:ev.key,stage:'longer',elapsedMs:2000}),2000)); keyThresholdTimers.set(code,timers);
+  const initial=setTimeout(()=>{ _onKeyPressRepeat({code,key:ev.key}); const interval=setInterval(()=>_onKeyPressRepeat({code,key:ev.key}),REPEAT_RATE_MS); keyRepeatTimers.set(code,{initial:null,interval}); }, REPEAT_INITIAL_MS); keyRepeatTimers.set(code,{initial,interval:null});
+  // Visual button press highlight
+  pressVisual(code,true);
+}}
+function handleKeyUp(ev){ const code=ev.code; const start=keyDownTimes.get(code); clearKeyTimers(code); keyDownTimes.delete(code); if(start==null){ _onKeyUp({code,key:ev.key}); pressVisual(code,false); return;} const dur=performance.now()-start; const type= dur>=2000?'longer': dur>=1000?'long':'short'; _onKey({code,key:ev.key,type,durationMs:Math.round(dur)}); _onKeyUp({code,key:ev.key}); pressVisual(code,false); _onRedraw(); blit(); }
+window.addEventListener('keydown',(e)=>{ if(['Tab','Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Enter','Escape'].includes(e.key)) e.preventDefault(); handleKeyDown(e); });
+window.addEventListener('keyup',handleKeyUp);
+let lastTick=performance.now(); setInterval(()=>{ const now=performance.now(); const dt=now-lastTick; lastTick=now; _onTick(dt); _onRedraw(); blit(); },TICK_MS);
+
+function pressVisual(code,down){ const btn=[...document.querySelectorAll('[data-key]')].find(b=>b.dataset.key===code); if(btn){ btn.classList.toggle('pressed', !!down); } const kbd=[...document.querySelectorAll('.kbd .k')].find(b=>b.dataset.key===code); if(kbd){ kbd.classList.toggle('pressed', !!down); } }
+
+/*****************
+ * LIVE MODE (API only)
+ *****************/
+let liveModeEnabled=false,lastLive=0,liveStart=0; function setLiveMode(enable){ if(enable===liveModeEnabled) return; if(enable){ liveModeEnabled=true; _onRedraw(); blit(); lastLive=performance.now(); liveStart=lastLive; requestAnimationFrame(liveLoop); } else { liveModeEnabled=false; queueMicrotask(()=>{ _onRedraw(); blit(); }); }}
+function liveLoop(ts){ if(!liveModeEnabled) return; const dt=ts-lastLive; if(dt>=(1000/MAX_LIVE_FPS)){ lastLive=ts; const elapsed=ts-liveStart; _onLiveRedraw(dt,elapsed); _onRedraw(); blit(); } requestAnimationFrame(liveLoop); }
+
+/*******************
+ * PUBLIC API       *
+ *******************/
+function setScreenViewport({x=0,y=0,scale=SCALE}={}){ SCALE=scale; DISPLAY_W=RES_W*SCALE; DISPLAY_H=RES_H*SCALE; for (const c of [screenCanvas, gridCanvas]) { c.width=DISPLAY_W; c.height=DISPLAY_H; c.style.width=DISPLAY_W+'px'; c.style.height=DISPLAY_H+'px'; } stage.style.width=DISPLAY_W+'px'; stage.style.height=DISPLAY_H+'px'; stage.style.left=x+'px'; stage.style.top=y+'px'; drawGrid(); _onRedraw(); blit(); }
+
+window.Handheld={ RES_W,RES_H,get SCALE(){return SCALE;},TICK_MS,GRID_BORDER_WIDTH:GRID_BORDER_WIDTH,GRID_COLOR,BG_COLOR,
+  clearScreen,drawPixel,drawLine,drawRect,fillRect,drawTextBitmap,measureTextBitmap,
+  drawXXL,measureXXL,setScreenViewport,
+  setLiveMode,setRepeatTimings:(a,b)=>{REPEAT_INITIAL_MS=a;REPEAT_RATE_MS=b;},
+  get onKey(){return _onKey;},set onKey(cb){_onKey=cb||function(){};},
+  get onKeyThreshold(){return _onKeyThreshold;},set onKeyThreshold(cb){_onKeyThreshold=cb||function(){};},
+  get onTick(){return _onTick;},set onTick(cb){_onTick=cb||function(){};},
+  get onRedraw(){return _onRedraw;},set onRedraw(cb){_onRedraw=cb||function(){};},
+  get onLiveRedraw(){return _onLiveRedraw;},set onLiveRedraw(cb){_onLiveRedraw=cb||function(){};},
+  get onKeyDown(){return _onKeyDown;},set onKeyDown(cb){_onKeyDown=cb||function(){};},
+  get onKeyUp(){return _onKeyUp;},set onKeyUp(cb){_onKeyUp=cb||function(){};},
+  get onKeyPressRepeat(){return _onKeyPressRepeat;},set onKeyPressRepeat(cb){_onKeyPressRepeat=cb||function(){};},
+  repaint: ()=>{ _onRedraw(); blit(); }
+};
+
+// Wire HTML buttons to synth keys
+function synthKey(code,isDown){ const ev={ code, key: code.startsWith('Digit')?code.replace('Digit',''): (code.startsWith('Arrow')?code.replace('Arrow',''):(code==='Space'?' ':code)) }; if(isDown) handleKeyDown(ev); else handleKeyUp(ev); }
+[...document.querySelectorAll('[data-key]')].forEach(el=>{ el.addEventListener('mousedown',()=>synthKey(el.dataset.key,true)); el.addEventListener('mouseup',()=>synthKey(el.dataset.key,false)); el.addEventListener('mouseleave',()=>synthKey(el.dataset.key,false)); });
+[...document.querySelectorAll('.kbd .k')].forEach(el=>{ el.addEventListener('mousedown',()=>synthKey(el.dataset.key,true)); el.addEventListener('mouseup',()=>synthKey(el.dataset.key,false)); el.addEventListener('mouseleave',()=>synthKey(el.dataset.key,false)); });
+
+/*********************
+ * SELF-TESTS (basic) *
+ *********************/
+console.assert(typeof measureXXL==='function','measureXXL should exist');
+console.assert(typeof XXL==='object' && typeof XXL.get==='function','XXL font object get() exists');
+console.assert(measureXXL('435.225').w>0,'measureXXL should return width');
+console.assert(typeof Handheld!=="undefined" && typeof Handheld.setLiveMode==='function','API Handheld.setLiveMode exists');
+
+/************************************************************
+ * USER APP: TRANSCEIVER DEMO
+ ************************************************************/
+(function(){
+  const MODE_BLUE = '#0a4fd0';
+  const KEYMAP={ PTT:'Tab', SWITCH_ACTIVE:'KeyQ', TOGGLE_MODE:'KeyW', UP:'ArrowUp', DOWN:'ArrowDown' };
+  Handheld.setRepeatTimings(REPEAT_INITIAL_MS,REPEAT_RATE_MS);
+  Handheld.setScreenViewport({x:0,y:0,scale:SCALE}); // smaller screen, buttons align left and below
+
+  // ===== Memory model =====
+  const POWERS=['L','M','H','T']; const MODES=['DIG','ANA','D+A','A+D'];
+  const makeMR=(idx,o={})=>({type:'MR',mrIndex:idx,name:o.name||`CHANNEL ${idx}`,zone:(o.zone||'ZONE1').slice(0,5),freqHz:o.freqHz||(435000000+idx*12500),uplink8:o.uplink8||null,power:o.power||POWERS[idx%POWERS.length],mode:o.mode||MODES[idx%MODES.length],rpt:!!o.rpt});
+  const MEM=[
+    makeMR(1,{name:'REP SOLO', zone:'ZONE1',freqHz:435225000,power:'L',mode:'DIG'}),
+    makeMR(2,{name:'RPT MAIN', zone:'ZONE1',freqHz:438500000,power:'M',mode:'ANA',rpt:true,uplink8:'99999999'}),
+    makeMR(3,{name:'DMR TG91', zone:'WORLD',freqHz:439450000,power:'H',mode:'DIG'}),
+    makeMR(4,{name:'LOCAL NET',zone:'LOCAL',freqHz:433500000,power:'L',mode:'D+A'}),
+    makeMR(5,{name:'SAT UPLNK',zone:'SAT  ',freqHz:435800000,power:'T',mode:'ANA'})
+  ];
+
+  const memory={ vfo:[ {freqHz:435225000,power:'M',mode:'DIG',rpt:false}, {freqHz:439450000,power:'H',mode:'DIG',rpt:false} ], mr: MEM };
+  const channelState=[ { mode:'VFO', lastMrIndex:1, spec:{} }, { mode:'MR', lastMrIndex:2, spec:{} } ];
+
+  const state={ active:0, tx:false, signal:1, timeStr:fmtTime(), editing:{active:false,kind:null,digits:"",originalHz:0,originalMr:1} };
+
+  // ===== Live peaks only =====
+  const PEAKS_H=30; // band height
+  const SPEC_WIDTH=RES_W-8; // make it wider
+  const BIN_STEP_HZ=2500; // 2.5 kHz/bin
+  function resetSpec(spec){ spec.cols=SPEC_WIDTH; spec.spectrum=new Array(SPEC_WIDTH).fill(0); }
+  resetSpec(channelState[0].spec); resetSpec(channelState[1].spec);
+
+  // ===== Helpers =====
+  const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
+  function fmtTime(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return `${d.getUTCFullYear()}/${p(d.getUTCMonth()+1)}/${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`; }
+  function drawTimeString(x,y,str){ let dx=x; for(const ch of str){ if(ch===':'){ fillRect(dx,y+1,1,1,'#fff'); fillRect(dx,y+5,1,1,'#fff'); dx+=2; } else { drawTextBitmap(ch,dx,y,'#fff'); dx += FONT.charWidth+FONT.spacing; } } }
+  function hzToBigSmall(hz){ const s=(hz/1e6).toFixed(5); return { big:s.slice(0,-2), small:s.slice(-2) }; }
+  function formatFreq8(hz8){ const d=String(hz8).padStart(8,'0'); const A=d.slice(0,3), B=d.slice(3,6), C=d.slice(6,8); return {A,B,C}; }
+  function drawFreq8Small(x,y,hz8,color){ const {A,B,C}=formatFreq8(hz8); let dx=x; drawTextBitmap(A,dx,y,color); dx+=measureTextBitmap(A).w; // decimal dot lower by 1
+    fillRect(dx+1,y+FONT.charHeight-1,1,1,color); dx+=3; drawTextBitmap(B,dx,y,color); dx+=measureTextBitmap(B).w; dx+=1; drawTextBitmap(C,dx,y,color); }
+  function getChannelData(i){ const cs=channelState[i]; return (cs.mode==='VFO')? memory.vfo[i] : {...memory.mr[(cs.lastMrIndex-1+memory.mr.length)%memory.mr.length]}; }
+
+  // ===== Inputs =====
+  Handheld.onTick=()=>{ state.timeStr=fmtTime(); };
+  Handheld.onKeyDown=({code})=>{ if(code===KEYMAP.PTT){ state.tx=true; Handheld.repaint(); } };
+  Handheld.onKeyUp=({code})=>{ if(code===KEYMAP.PTT){ state.tx=false; Handheld.repaint(); } };
+  Handheld.onKey=({code,type})=>{
+    if(code===KEYMAP.SWITCH_ACTIVE && type==='short'){ state.active = state.active?0:1; resetSpec(channelState[state.active].spec); state.editing={active:false,kind:null,digits:"",originalHz:0,originalMr:1}; }
+    if(code===KEYMAP.TOGGLE_MODE && type==='short'){ const cs=channelState[state.active]; cs.mode = (cs.mode==='VFO') ? 'MR' : 'VFO'; resetSpec(cs.spec); state.editing={active:false,kind:null,digits:"",originalHz:0,originalMr:1}; }
+
+    if(/^Digit[0-9]$/.test(code) && type==='short'){
+      const d=code.slice(-1); const cs=channelState[state.active];
+      if(cs.mode==='VFO'){
+        const v=memory.vfo[state.active]; if(!state.editing.active){ state.editing={active:true,kind:'FREQ',digits:"",originalHz:v.freqHz,originalMr:cs.lastMrIndex}; }
+        if(state.editing.digits.length<8){ state.editing.digits+=d; if(state.editing.digits.length===8) commitDigits(); }
+      } else {
+        if(!state.editing.active){ state.editing={active:true,kind:'CH',digits:"",originalHz:memory.vfo[state.active].freqHz,originalMr:cs.lastMrIndex}; }
+        if(state.editing.digits.length<4){ state.editing.digits+=d; if(state.editing.digits.length===4){ commitChannelDigits(); } }
+      }
+    }
+    if(code==='Enter' && type==='short' && state.editing.active){ if(state.editing.kind==='FREQ'){ while(state.editing.digits.length<8) state.editing.digits+='0'; commitDigits(); } else if(state.editing.kind==='CH'){ while(state.editing.digits.length<4) state.editing.digits='0'+state.editing.digits; commitChannelDigits(); } }
+    if(code==='Escape' && type==='short' && state.editing.active){ if(state.editing.kind==='FREQ'){ cancelDigits(); } else { cancelChannelDigits(); } }
+  };
+
+  Handheld.onKeyPressRepeat=({code})=>{ if(state.editing.active) return; const cs=channelState[state.active]; if(code===KEYMAP.UP){ if(cs.mode==='VFO'){ memory.vfo[state.active].freqHz=clamp(memory.vfo[state.active].freqHz+BIN_STEP_HZ,0,9999999900); } else cycleMR(+1); } if(code===KEYMAP.DOWN){ if(cs.mode==='VFO'){ memory.vfo[state.active].freqHz=clamp(memory.vfo[state.active].freqHz-BIN_STEP_HZ,0,9999999900); } else cycleMR(-1); Handheld.repaint(); } };
+
+  function cycleMR(dir){ const cs=channelState[state.active]; let idx=cs.lastMrIndex-1; idx=(idx+dir+memory.mr.length)%memory.mr.length; cs.lastMrIndex=idx+1; }
+  function commitDigits(){ const d=state.editing.digits.padEnd(8,'0'); const mhz=+d.slice(0,3),khz=+d.slice(3,6),rest=+d.slice(6,8); const hz=mhz*1e6+khz*1e3+rest*10; memory.vfo[state.active].freqHz=hz; state.editing={active:false,kind:null,digits:"",originalHz:0,originalMr:1}; }
+  function cancelDigits(){ memory.vfo[state.active].freqHz=state.editing.originalHz; state.editing={active:false,kind:null,digits:"",originalHz:0,originalMr:1}; }
+  function commitChannelDigits(){ const n=parseInt(state.editing.digits.padStart(4,'0'),10); const cs=channelState[state.active]; const max=memory.mr.length; cs.lastMrIndex = ((n-1+max)%max)+1; state.editing={active:false,kind:null,digits:"",originalHz:0,originalMr:1}; }
+  function cancelChannelDigits(){ const cs=channelState[state.active]; cs.lastMrIndex=state.editing.originalMr; state.editing={active:false,kind:null,digits:"",originalHz:0,originalMr:1}; }
+
+  // ===== Live peaks (50 fps) =====
+  function specColor(v){ const r = v>0.66 ? 255 : v>0.33 ? Math.floor( (v-0.33)/0.33 * 255) : 0; const g = v>0.66 ? Math.floor( (1-(v-0.66)/0.34) * 255) : Math.floor(v/0.66 * 255); const b = v<0.33 ? Math.floor( (1 - v/0.33) * 200) : 0; return `rgb(${r},${g},${b})`; }
+  function hash(n){ n=Math.imul(n^0x9e3779b9, 0x85ebca6b); n^=n>>>13; n=Math.imul(n,0xc2b2ae35); return (n^=n>>>16)>>>0; }
+  Handheld.setLiveMode(true);
+  Handheld.onLiveRedraw=(dt,elapsed)=>{
+    const cs=channelState[state.active]; const spec=cs.spec;
+    const centerHz = (cs.mode==='VFO'? memory.vfo[state.active].freqHz : memory.mr[cs.lastMrIndex-1].freqHz);
+    const t = performance.now()*0.001;
+    for(let i=0;i<spec.cols;i++){
+      const absHz = centerHz + (i - Math.floor(spec.cols/2))*BIN_STEP_HZ;
+      const binId = Math.floor(absHz / BIN_STEP_HZ);
+      const h = hash(binId);
+      // base noise + fast flicker
+      let v = Math.random(); // fully random per frame & pixel
+      v *= 0.2; // stretch it up ~2x overall
+      // deterministic peaks per 200 kHz slice
+      const slice = Math.floor(absHz/200000); const hs = hash(slice);
+      const peakCount = 2 + (hs & 1) + ((hs>>>3)&1); // 2..4 peaks
+      for(let p=0;p<peakCount;p++){
+        const ph = (hash(hs + p*1337) % spec.cols) - Math.floor(spec.cols/2);
+        const cHz = centerHz + ph*BIN_STEP_HZ; const distHz = Math.abs(absHz - cHz);
+        const width = 8000 + (hash(hs^p) % 15000); // 8..23 kHz
+        const amp = 0.5 + ((hash(hs + p*17) & 0xff)/255)*0.5; // 0.5..1.0
+        v += amp * Math.exp(- (distHz*distHz) / (2*width*width));
+      }
+      spec.spectrum[i]=Math.max(0, Math.min(1, v));
+    }
+  };
+
+  // ===== Draw =====
+  const COLOR={ activeBG:'#002818', blue:'#1383ff', dim:'#aaa', inactiveFG:'#888', sigOn:'#0f0', sigOff:'#333' };
+  Handheld.onRedraw=()=>{ clearScreen(BG_COLOR); drawTopBar(); const hActive=86, hInactive=57; const topActive=(state.active===0); const y0=8; const h0=topActive?hActive:hInactive; drawChannel(y0,0,topActive, state.tx && state.active===0, hActive, hInactive); drawChannel(y0+h0,1,!topActive, state.tx && state.active===1, hActive, hInactive); drawBottomBar(); };
+
+  function drawTopBar(){ const y=0,h=8; drawTimeString(0,y,state.timeStr); drawBattery(RES_W-17,y); fillRect(0,y+h,RES_W,1,'#222'); }
+  function drawBattery(x,y){ // extend 1px left, four bars
+    drawRect(x,y,15,7,'#fff'); fillRect(x+15,y+2,2,3,'#fff');
+    fillRect(x+2,y+2,2,3,'#0f0'); fillRect(x+5,y+2,2,3,'#0f0'); fillRect(x+8,y+2,2,3,'#0f0'); fillRect(x+11,y+2,2,3,'#0f0'); }
+
+  function drawChannel(startY,idx,isActive,isTX,hActive,hInactive){
+    const h=isActive?hActive:hInactive; const y=startY;
+    // separator same color as pill
+    fillRect(0,y,RES_W,1,MODE_BLUE);
+    if(isActive) fillRect(0,y+1,RES_W,h-1, isTX?'#c00':'#002818');
+    const cs=channelState[idx]; const data=getChannelData(idx); const fg=isActive?'#fff':'#888';
+
+    // LINE 1: mode pill, CH/VFO slot, power, R+uplink
+    const mode=(cs.mode==='VFO'? data.mode : (data.mode||'DIG')); const mw=measureTextBitmap(mode).w; fillRect(0,y+1,mw+4,9,MODE_BLUE); drawTextBitmap(mode,2,y+2,'#fff');
+    let x=mw+6; const chSlotW=measureTextBitmap('0000').w+2;
+    if(cs.mode==='MR'){
+      const num=String(cs.lastMrIndex).padStart(4,'0'); drawTextBitmap(num,x,y+2,fg);
+    } else {
+      const vfoW=measureTextBitmap('VFO').w; const vx=x + Math.floor((chSlotW - vfoW)/2) - 1; drawTextBitmap('VFO',vx,y+2,fg);
+    }
+    x+=chSlotW;
+
+    // Power box
+    fillRect(x,y+1,7,9,'#c00'); drawTextBitmap((data.power||'M'),x+1,y+2,'#fff'); x+=9;
+
+    // Repeater marker (blue box) + uplink "999.999 99" with tiny gap
+    if(cs.mode==='MR' && memory.mr[cs.lastMrIndex-1].rpt){
+      fillRect(x,y+1,7,9,MODE_BLUE); drawTextBitmap('R',x+1,y+2,'#fff'); x+=9;
+      const up=memory.mr[cs.lastMrIndex-1].uplink8; if(up){ drawFreq8Small(x,y+2,up,fg); }
+    }
+
+    // LINE 2: big frequency
+    const fHz=(cs.mode==='VFO')? data.freqHz : memory.mr[cs.lastMrIndex-1].freqHz; const {big,small}=hzToBigSmall(fHz|0); const bigY=y+16; const bigM=measureXXL(big); const smallY=bigY + bigM.h - 10; drawXXL(big,2,bigY,fg); drawTextBitmap(small, 2+bigM.w+3, smallY, fg);
+
+    // LINE 3: name | zone (<=5), signal bars right (2px lower), move two px down
+    const row3y=bigY+bigM.h+0; const rightPad=2; const sigW=(2*9)+(1*8); const sigX=RES_W-rightPad-sigW;
+    if(cs.mode==='MR'){
+      const m=memory.mr[cs.lastMrIndex-1]; const zn=(m.zone||'ZONE1').toUpperCase().slice(0,5); const name=(m.name||'').toUpperCase(); const left=`${name} ${zn}`; const maxW=sigX-6; drawTextBitmap(left,2,row3y,fg,{clipW:maxW,clipH:FONT.charHeight});
+    }
+    drawSignalInline(sigX, row3y+2, state.signal);
+
+    // LINE 4: live peaks band — move up a few pixels and wider
+    if(isActive && !isTX){ const spec=cs.spec; const peaksTop=y + h - PEAKS_H - 4; drawPeaksBand(4, peaksTop, spec, PEAKS_H); const cx=4+Math.floor(spec.cols/2); drawLine(cx, peaksTop, cx, peaksTop + PEAKS_H - 1, '#fff'); }
+  }
+
+  function drawSignalInline(x,y,level){ const heights=[3,3,3,4,4,4,5,5,5]; const bw=2,gap=1; for(let i=0;i<heights.length;i++){ const h=heights[i]; const bx=x+i*(bw+gap); const by=y+(5-h); fillRect(bx,by,bw,h, i<level?'#0f0':'#333'); } }
+  function drawPeaksBand(x,topY,spec,h){ for(let i=0;i<spec.cols;i++){ const v=spec.spectrum[i]; const ph=Math.floor(v*h); if(ph>0) fillRect(x+i, topY + (h - ph), 1, ph, specColor(v)); } }
+
+  function drawBottomBar(){ const h=9; const y=RES_H-h; const MODE_BLUE = '#0a4fd0'; fillRect(0,y,RES_W,h,MODE_BLUE); drawTextBitmap('MENU',2,y+1,'#fff'); const w=measureTextBitmap('LIST').w; drawTextBitmap('LIST',RES_W-w-2,y+1,'#fff'); }
+
+  // First paint
+  Handheld.repaint();
+})();
+</script>
+</body>
+</html>
